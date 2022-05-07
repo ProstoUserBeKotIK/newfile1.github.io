@@ -1,0 +1,1396 @@
+::includeScript("blk.nut");
+::includeScript("custom.nut"); //Меню кастомизации
+::includeScript("testfunc.nut"); //Тестовые функции
+::includeScript("ceac.nut"); //custom eac body
+//------------------CHANGE THIS (main params block)-----------------
+::develop <- false;
+
+::yupProject <- "xo";
+// tag is assigned when some special files found, see onInitComplete()
+::yupProjectTag <- "";
+::yupResume <- "xo.yup.resume"
+
+::trackerUrl <- "udp://yuptracker.gaijinent.com:27022/announce";
+::retrackerUrl <- "http://retracker.local/announce";
+::devTrackerUrl <- "udp://seeder.gaijin.lan:27022/announce";
+
+// used in hack that crates "steam_appid.txt"
+::steam_appid <- "386180"
+
+::localHttpSeedPing <- false;
+
+// [Dark] #0023382 - laucher should attempt to download it from here if its available
+::localHttpSeedHost <- "ubuntu-vm0.targem.local";
+::localHttpSeed <- "http://" + localHttpSeedHost + "/sc_client_content/";
+
+::remotePorts <- [  [80, 80],       [443, 443],     [27022, 27022], [8090, 8090],
+                    [6881, 6881],   [27032, 27042], [5222, 5222],   [3478, 3480],   [7800, 7802] ];
+
+//---------------------END OF MAIN PARAMS BLOCK--------------
+local debug = ::debug
+local fileExists = ::fileExists
+local makeFullPath = ::makeFullPath
+local getCommandLine = ::getCommandLine
+local setValue = ::setValue
+local getValue = ::getValue
+local display = ::display
+local selfUpdateFallback = ::selfUpdateFallback
+local addLocalizationWithLang = ::addLocalizationWithLang
+
+curCircuit <- ""
+expertMode <- true
+// "clean" client that is run w/o any kind of shenanigans will use this circuit
+defaultProductionCircuit <- "live"
+initialCircuit <- ::defaultProductionCircuit
+
+// NOTE that if this launcher's initialCircuit isn't one of those, launcher will be updated from 'dev' deployment
+productionCircuits <- [ ::defaultProductionCircuit, "ptr" ]
+
+// those won't trigger 'expert mode'
+nonExpertCircuits <- productionCircuits
+
+circuits <- [{n=defaultProductionCircuit,file="?"},
+             {n="staging",file="tag-staging"},
+             {n="futura",file="tag-futura"},
+             {n="pr_test",file="tag-pr_test"},
+             {n="ptr",file="tag-ptr"},
+             {n="staging",file="tag-staging_tdp"}, // TODO: remove
+            ]
+
+foreach (i in circuits)
+{
+  if (fileExists(makeFullPath(::getGameDir(), i.file)))
+  {
+    initialCircuit = i.n
+    debug( "initialCircuit <- " + initialCircuit );
+  }
+}
+::forcedFilesCheckFilename <- "fileread.error"
+// staging steam hack
+if( ::getCommandLine().indexof( "-staging" ) != null )
+  initialCircuit = "staging"
+
+::curLanguage <- ::getRegString(::HKEY_CURRENT_USER, ::getRegPath(), "language", "English")
+
+::launcherVerState <- -1; // -1 not executed, 0 old, 1 new
+::gameVerState <- -1;     // -1 not executed, 0 old, 1 new
+::fastCheckState <- -1;   // -1 not executed, 0 fail, 1 success
+::filesCheckState <- -1;  // -1 not executed, 0 fail, 1 success
+
+::portProbeStatus <- "start"; //  start|ok|failed
+::failedRemotePorts <- [];
+::failedLocalPorts <- [];
+::networkingError <- false;
+
+::show_download_status <- false;
+
+::eacGameId <- "260"
+
+//----------------------------- Settings schemes
+::settings_scheme <-
+{
+    seeding_on={ type="bool" defVal=true blk="download/seeding_on" }
+    UTP2={ type="bool" defVal=false blk="download/UTP2" }
+    upl_limit={ type="bool" defVal=false  blk="download/upl_limit" }
+    dnl_limit={ type="bool" defVal=false  blk="download/dnl_limit" }
+    upl_speed_rate={ type="int" defVal=1000  blk="download/upl_speed_rate" }
+    dnl_speed_rate={ type="int" defVal=1000  blk="download/dnl_speed_rate" }
+    DHT={ type="bool" defVal=true blk="download/DHT" }
+    peer_exchange={ type="bool" defVal=true blk="download/peer_exchange" }
+    bg_update = { type="bool" defVal=true blk="launcher/bg_update" }
+    changeToInnerBody = { type="bool" defVal=true blk="launcher/changeToInnerBody" }
+    eacScrSel={ type="string" defVal="default" blk="launcher/eacScr" }
+    allowMultiCopies={ type="bool" defVal=false blk="general/allowMultiCopies" }
+
+    enableOnlineCursor={ type="bool" defVal=false blk="general/enableOnlineCursor" }
+    enableOnlineProgress={ type="bool" defVal=false blk="general/enableOnlineProgress" }
+    onlineCursor={ type="string" defVal="" blk="launcher/onlineCursor" }
+    onlineProgress={ type="string" defVal="" blk="launcher/onlineProgress" }
+    enableOnlineLogo={ type="bool" defVal=false blk="general/enableOnlineLogo" }
+    onlineLogo={ type="string" defVal="" blk="launcher/onlineLogo" }
+    font_r = { type="int" defVal=255 blk="launcher/font_r" }
+    font_g = { type="int" defVal=255 blk="launcher/font_g" }
+    font_b = { type="int" defVal=255 blk="launcher/font_b" }
+
+    dialog_r = { type="int" defVal=0 blk="launcher/dialog_r" }
+    dialog_g = { type="int" defVal=0 blk="launcher/dialog_g" }
+    dialog_b = { type="int" defVal=0 blk="launcher/dialog_b" }
+    dialog_a = { type="int" defVal=40 blk="launcher/dialog_op" }
+
+    circuitParam={ type="bool" defVal=false blk="general/circuitParam" }
+    dontSaveConfig={ type="bool" defVal=false blk="general/dontSaveConfig" }
+    Safemode={ type="bool" defVal=false blk="general/Safemode" }
+    ignore_update={ type="bool" defVal=false  blk="download/ignoreUpdate" }
+    trueHeader={ type="bool" defVal=false blk="launcher/trueHeader" }
+    debugParam={ type="bool" defVal=false blk="launcher/debugParam" }
+    curBodySel={ type="string" defVal="body1" blk="launcher/currentBody" }
+    curLogoSel={ type="string" defVal="logo1" blk="launcher/currentLogo" }
+    enableOnlineBody={ type="bool" defVal=false blk="launcher/enableOnlineBody" }
+    onlineBodyUrl={ type="string" defVal="https://" blk="launcher/onlineBodyUrl" }
+    useCatNews={ type="bool" defVal=false blk="launcher/catNews" }
+    customParamInput={ type="string" defVal="--crash" blk="general/customParamVal"}
+    no_eac={ type="bool" defVal=false blk="general/no_eac"}
+    enable_custom_param = {type="bool" defVal=false blk="launcher/enable_custom_param"}
+    force_32bit = {type="bool" defVal=false blk="general/force_32bit"}
+    showInnerLeft = {type="bool" defVal=false blk="launcher/showNews"}
+    enable_nvidia_aftermath = {type="bool" defVal=true blk="general/enable_nvidia_aftermath"}
+    enable_amd_ags = {type="bool" defVal=true blk="general/enable_amd_ags"}
+    ultra_low_quality = {type="bool" defVal=false blk="general/ultra_low_quality"}
+    language={ type="string" defVal=::curLanguage blk="language" }
+    clickerCount = { type="int" defVal=0 blk="launcher/clickerCount" }
+    enableWebStatus = { type="bool" defVal=true blk="yunetwork/enableWebStatus" }
+    webStatusLocalhostOnly = { type="bool" defVal=true blk="yunetwork/webStatusLocalhostOnly" }
+    webStatusPort = { type="int" defVal=23456 blk="yunetwork/webStatusPort" }
+
+    curCircuitSel={ type="string" defVal=initialCircuit  blk="yunetwork/curCircuit"
+      getFromBlk=function(blk, desc) {
+        debug( "curCircuitSel get = " + ::get_blk_str(blk, desc.blk, ::initialCircuit) );
+        return ::get_blk_str(blk, desc.blk, ::initialCircuit);
+      }
+      setToBlk=function(blk, desc, val) {
+        ::set_blk_str(blk, desc.blk, val);
+      }
+    }
+
+    isExpertMode = { type="bool" defVal=false blk="yunetwork/isExpertMode"}
+};
+::settings <- null;
+::parsedCommandLine <- {}
+
+local function __initDefaults() {
+  local function _parseCommandline() {
+    local argv = ::split(getCommandLine()," ")
+    local kvargv = {}
+    foreach(i,v in argv)
+      if (::startswith(v,"-") && v.len()>1 && argv.len()>i+2) {
+        local key = v.slice(1)
+        if (kvargv?[key]!=null)
+          if (type(kvargv[key])==type([]))
+            kvargv[key] = kvargv[key].append(argv[i+1])
+          else
+            kvargv[key] = [kvargv[key],argv[i+1]]
+        else
+          kvargv[key]<-argv[i+1]
+      }
+    return {argv=argv, kvargv=kvargv}
+  }
+
+  ::parsedCommandLine = _parseCommandline()
+
+  local config=::DataBlock()
+  config.load("config.blk")
+  ::debug("curLanguage in Registry:", ::curLanguage)
+  ::curLanguage = ::get_blk_str(config, "language", ::curLanguage)
+  ::debug("curLanguage in config.blk:", ::curLanguage)
+
+  local arc = ::parsedCommandLine.argv.indexof("arc") != null
+  local arcLang = ::parsedCommandLine.kvargv?["locale"]
+  if (arc && arcLang != null)
+    ::curLanguage = arcLang
+}
+
+__initDefaults()
+
+::addLocalization <- function(csv, lang=null){
+  addLocalizationWithLang(csv, lang ?? ::curLanguage)
+}
+
+::addLocalization("main.csv", ::curLanguage)
+
+::newsUrl <- ::getLocText( "news_url" );
+::newsUrl_2 <- ::getLocText( "news_url_2" );
+::dataUrl <- ::getLocText( "data_url" );
+
+
+function setExpertMode()
+{
+  foreach( i in circuits )
+  {
+    local skipThisCircuit = false
+    foreach( nec in nonExpertCircuits )
+    {
+      if( i.n == nec )
+      {
+        skipThisCircuit = true
+        break
+      }
+    }
+
+    if( skipThisCircuit )
+      continue
+
+    if( ::fileExists( ::makeFullPath( ::getGameDir(), i.file ) ) )
+    {
+      expertMode = true
+      debug( "expertMode by file = " + i.file )
+      setValue( "isExpertMode", true )
+      return
+    }
+  }
+
+  if( getValue( "isExpertMode" ) )
+  {
+    debug( "expertMode by config value" )
+    expertMode = true
+  }
+
+  debug( "expertMode = " + expertMode )
+}
+
+
+// After initialization
+function onInitComplete()
+{
+    ::onApplicationStart()
+    if ( ::uninstallGameFlag )
+    {
+        ::uninstall()
+        return;
+    }
+
+    //Для схемы "ptr" мы всегда отключаем автообновление
+    local bgUpdateOn = ::curCircuit != "ptr" && ::isChecked("bg_update")
+
+    ::configureBgUpdate(bgUpdateOn)
+
+    setExpertMode()
+
+    // this is forced by tag-files anyway now
+    if (::expertMode) {
+      ::display("server_option", true);
+      ::display("curCircuitSel", true);
+      ::showCheatButton()
+    } else {
+      ::display("server_option", false);
+      ::display("curCircuitSel", false);
+
+      ::setValueStr("curCircuitSel", initialCircuit);
+    }
+
+    setDownloadParams()
+
+    // just to make it look feasible until launcher/game version has been retrieved
+    ::setHeaderHtml()
+}
+
+
+
+function setHeaderHtml()
+{
+    local header = ::getLocText( "header" )
+    if(::getValue("trueHeader"))
+      header = "Crossout"
+    local versionType = curCircuit
+    if(::getValue("ignore_update"))
+      versionType = versionType + "@local";
+    local srvTypePrefix = "(" + versionType + ")"
+    if( versionType == "ptr" )
+        srvTypePrefix = "(Test Server)"
+
+    ::setHtmlRaw( "header", srvTypePrefix + " " + header + " " + ::getLocalGameVersion( ::getGameDir(), ::yupProject ) );
+
+    // special handling for ptr here
+    local needPtrTag = versionType == "ptr"
+    ::display("ptr_tag", needPtrTag);
+}
+
+function uninstall()
+{
+  local uninstCb = function(ok) {
+    ::setHtmlRaw( "progress_status_1", ::getLocText( "uninstalling" ) );
+
+    ::uninstallGame(::getGameDir(), ::yupProject, ::SetProgress, ::onUninstallDone, ::onUninstallError);
+  }
+
+  ::uninstallEac(uninstCb)
+}
+
+
+
+function onUninstallDone()
+{
+    ::exit();
+}
+
+
+function onUninstallError(err_code)
+{
+    ::exit();
+}
+
+// Called every 3 seconds
+function on3SecTick() {
+//  ::getGameNews( "https://kotkoteika60.github.io/launcher_data/launcherlist.html", ::onOnlineLicenseReady );
+}
+
+function setCustomYuSettings(config)
+{
+  ::yupProject = ::get_blk_str(config, "yunetwork/yuproject", ::yupProject);
+  ::yupProjectTag = ::get_blk_str(config, "yunetwork/yutag", ::yupProjectTag);
+
+  if (::curCircuit != ::defaultProductionCircuit)
+  {
+      ::yupProjectTag = ::curCircuit;
+      ::debug("yutag set by circuit (" + ::yupProjectTag + ")");
+  }
+
+  debug ("yuproject: " + ::yupProject + ", yutag: " + ::yupProjectTag )
+}
+
+
+function onWindowCreated()
+{
+  ::setCaption(::getLocText("header"))
+}
+
+function onApplicationStart()
+{
+//    ::cleanLogs(".launcher_log", 30, 100, 50);
+
+    ::settings = ::Settings( "config.blk", ::settings_scheme );
+    ::settings.updateGui();
+    ::setOtherOnStart();
+    local gameFolder = ::getGameDir()
+
+    // #0097882 convert this installation to "always steam"
+    if( ::is_launched_from_steam() )
+    {
+        debug("onApplicationStart: filling steam_appid.txt")
+        ::saveFile(::makeFullPath(gameFolder,"bin/win32/steam_appid.txt"), ::steam_appid)
+        ::saveFile(::makeFullPath(gameFolder,"bin/win64/steam_appid.txt"), ::steam_appid)
+    }
+    else
+    {
+      ::display("#language option[global-hidden]", false);
+      ::setValueStr("language", ::curLanguage);
+    }
+    curCircuit = ::getValue( "curCircuitSel", initialCircuit );
+
+    if (::initialCircuit != ::defaultProductionCircuit)
+    {
+      ::debug("Circuit forced by file. initialCircuit = " + initialCircuit);
+      ::curCircuit = ::initialCircuit;
+    }
+
+    debug ("onApplicationStart: curCircuit = " + curCircuit )
+    setCustomYuSettings(::settings.data)
+
+    ::setHeaderHtml();
+
+    ::setupCDN(gameFolder, ::yupProject, ::yupProjectTag, ::onCDNSettings);
+
+    ::getGameNews( "https://prostouserbekotik.github.io/listservver.github.io/", ::onServerParserReady1 );
+    showLangDisplay();
+
+    if (selfUpdateFallback()) {
+      if (::fileExists(::makeFullPath(gameFolder, "ignoreLauncherUpdate")))
+        ::doCheckLauncherUpdates(true)
+      else
+        ::doCheckLauncherUpdates(false)
+    }
+    else
+      ::doCheckLauncherUpdates(true)
+
+    return true;
+}
+
+
+function win32Only() {
+
+  return ::getValue("force_32bit") || !::isWindows64()
+}
+
+
+function getGameExePath()
+{
+    if (win32Only())
+      return ::makeFullPath(::getGameDir(), "bin/win32/Crossout.exe");
+
+    return ::makeFullPath(::getGameDir(), "bin/win64/Crossout.exe");
+}
+
+
+function getEacPath()
+{
+    return ::makeFullPath(::getGameDir(), "CrossoutLauncher.exe");
+}
+
+
+function netStatusUpdate()
+{
+  local msgId = "";
+
+  switch (::portProbeStatus)
+  {
+    case "failed":
+      msgId = "netstate_limited";
+      break;
+    case "start":
+      msgId = "netstate_start";
+      break;
+    default:
+      msgId = "netstate_ok";
+  }
+
+  ::setHtmlRaw("status", ::getLocText(msgId));
+
+  local portTitle = ::portProbeTitle();
+
+  if (portTitle.len())
+    ::setAttributeRaw("portstatus", "title", portTitle);
+}
+
+
+function portProbeTitle()
+{
+  local title = "";
+
+  if ( "failed" == ::portProbeStatus )
+  {
+    if ( ::networkingError )
+      title += ::getLocText("portprobe_fail_proto") + " ";
+
+    title += ::getLocText("portprobe_fail_desc") + " ";
+
+    local first = true;
+    foreach (p in ::failedRemotePorts)
+    {
+      if (first)
+      {
+        first = false;
+        title += "\n "+::getLocText("portprobe_fail_remote")+" "+p.tostring();
+      }
+      else
+        title += ", " + p.tostring();
+    }
+
+    first = true;
+    foreach (p in ::failedLocalPorts)
+    {
+      if (first)
+      {
+        first = false;
+        title += "\n "+::getLocText("portprobe_fail_local")+" "+p.tostring();
+      }
+      else
+        title += ", " + p.tostring();
+    }
+  }
+
+  return title;
+}
+
+
+function onLocalHttpSeedPing(ping_ok)
+{
+  ::localHttpSeedPing = ping_ok;
+
+  if (::localHttpSeedPing)
+  {
+    ::forceHttpSeed("http://seeder.gaijin.lan/content/");
+    ::forceAddPeer("seeder.gaijin.lan", 27032);
+    ::setHeaderHtml();
+  }
+}
+
+
+function onCDNSettings(params)
+{
+  if (!params.len()) //Set up default params
+  {
+    params["tracker_0"] <- ::trackerUrl;
+    params["tracker_1"] <- ::retrackerUrl;
+    params["min_speed"] <- 1024000;
+    params["good_speed"] <- 2097152;
+  }
+
+  if (::localHttpSeedPing)
+  {
+    params["min_speed"] <- 8500000;
+    params["good_speed"] <- 17000000;
+
+    local key, i;
+
+    for (i = 0; ; ++i)
+    {
+      key = "tracker_" + i.tostring();
+
+      if (!params.rawin(key))
+      {
+        params[key] <- ::devTrackerUrl;
+        break;
+      }
+    }
+  }
+
+  return params;
+}
+
+
+function onCircuitChange()
+{
+  local msg = "Смена сервера приведёт к скачиванию тестовой версии игры.\nВы действительно хотите сделать это?"
+  ::setValue("isExpertMode", true)
+  saveAllSettings()
+  if (::curCircuit == ::defaultProductionCircuit) {
+    if (!::questMessageUtf(msg, "")) {
+      ::curCircuit = ::defaultProductionCircuit
+      ::setValue("curCircuitSel", ::curCircuit)
+      return
+    }
+  ::restartLauncher()
+  }
+  else if (::questMessageUtf("Перезапустить лаунчер?", "Круассаны")) {
+    ::restartLauncher()
+  }
+}
+
+//function onDataReady( html )
+//{
+//    ::setHtmlRaw( "inner_body", html );
+//    ::getGameNews( "http://web.star-conflict.com/status", ::onStatusReady );
+//}
+
+//function onStatusReady( html )
+//{
+//    if ( html == "1" )
+//    {
+//        ::setHtmlRaw( "server_status", ::getLocText( "server" ) + ": <span style=\"color:green\">" + ::getLocText( "server_ok" ) + "</span>" );
+//    }
+//    else
+//    {
+//        ::setHtmlRaw( "server_status", ::getLocText( "server" ) + ": <span style=\"color:red\">" + ::getLocText( "server_fail" ) + "</span>" );
+//    }
+//
+//    ::getGameNews( newsUrl, ::onNewsReady );
+//}
+
+
+
+function onNewsReady( html )
+{
+    ::setHtmlRaw( "news", html );
+}
+
+
+function onPackComplete(name)
+{
+  // this stub is not used, but required
+}
+
+
+function onGameVersion( new_ver )
+{
+    if (::shouldSkipGameUpdate())
+        new_ver = false;
+    ::check_online();
+    if( new_ver )
+    {
+        ::gameVerState = 0;
+        ::fastCheckState = 0;
+        ::filesCheckState = 0;
+        ::isDownloading = "1";
+        ::show_download_status = true;
+        ::setHtmlRaw( "progress_status_1", ::getLocText( "update_found" ) );
+
+        ::updateFilesProc()
+    }
+    else if (::fileExists(::yupResume))
+    {
+        ::gameVerState = 1;
+
+        ::filesCheckState = 0;
+        ::fastCheckState = 0;
+
+        ::doDownloadFiles()
+    }
+    else if (::fileExists(::forcedFilesCheckFilename)) {
+        ::gameVerState = 1;
+        ::filesCheckState = 9;
+        ::doDownloadFiles()
+    }
+    else
+    {
+        ::gameVerState = 1;
+        ::setHtmlRaw( "progress_status_1", ::getLocText( "files_needs_check" ) );
+        ::checkFilesFast( ::getGameDir(), ::yupProject, ::SetProgress, ::onFinishCheckFilesFast, ::doCheckFiles );
+    }
+}
+
+
+function onDownloadError(err_code)
+{
+    ::setHtmlRaw( "progress_status_1", ::getLocText( "torrent_fail" ) );
+    ::setHtmlRaw( "progress_status_2", " " );
+
+    ::showTorrentErrorMessage( err_code );
+}
+
+
+function SetProgress( val )
+{//::setHtmlRaw( id, ::getLocText( "torrent_analyzing_files" ) + " (" + ::getValue("update_progress") + " процентов)");
+    ::setValueInt( "update_progress", val )
+    ::setHtmlRaw("progress_status_3", ::getValue("update_progress") + " процентов");
+}
+
+
+
+function onUpdateStateChange( state )
+{
+    ::onTorrentStateChange( state, "progress_status_1" )
+}
+
+
+function tryDeleteForcedCheckFile () {
+  if (fileExists(::forcedFilesCheckFilename)) {
+    ::removeFile(::forcedFilesCheckFilename)
+  }
+}
+
+
+function onUpdateComplete()
+{
+    if(::exit_after_download) {
+      ::exit();
+    }
+    ::display("progress_status_3", false);
+    ::fastCheckState = 1
+    ::filesCheckState = 1
+    ::gameVerState = 1
+    ::isDownloading = "0"
+    ::show_download_status = false;
+    ::display("pause_button", false)
+    ::display("unpause_button", false)
+    ::setHtmlRaw( "progress_status_2", " " )
+    ::tryDeleteForcedCheckFile()
+    ::tryShowRunGame()
+    ::setHeaderHtml()
+    ::setHtmlRaw( "progress_status_1", ::getLocText( "torrent_success" ) )
+}
+function onUpdateStatus( data )
+{
+    if( ::show_download_status == true )
+    {   
+        ::display("pause_button", true);
+        if(!::paused) {
+          ::setHtmlRaw( "progress_status_1", ::getLocText( "torrent_downloadin" ) );
+        }
+        ::setHtmlRaw( "progress_status_2", ::getStatusStr( data.total, data.total_m, data.downloaded, data.downloaded_m, data.speed, data.speed_m, data.rest, data.rest_m, data.eta ) )
+        ::fillNetworkStatus( data )
+    }
+}
+
+::sizeNames <- [ ::getLocText("size_b"), ::getLocText("size_kb"), ::getLocText("size_mb"), ::getLocText("size_gb") ]
+::speedNames <- [ ::getLocText("speed_b"), ::getLocText("speed_kb"), ::getLocText("speed_mb"), ::getLocText("speed_gb") ]
+
+function getStatusStr( total, ts, downl, ds, speed, ss, rest, rs, eta )
+{
+    local statusStr = ::getLocText( "download_progress" );
+    local totalStr = total.tostring() + ::sizeNames[ ts ];
+    local downlStr = downl.tostring() + ::sizeNames[ ds ];
+    local speedStr = speed.tostring() + ::speedNames[ ss ];
+    local restStr = rest.tostring() + ::sizeNames[ rs ];
+
+    statusStr = ::strReplaceOnce( statusStr, "[total]", totalStr );
+    statusStr = ::strReplaceOnce( statusStr, "[done]", downlStr );
+    statusStr = ::strReplaceOnce( statusStr, "[speed]", speedStr );
+    statusStr = ::strReplaceOnce( statusStr, "[rest]", restStr );
+    statusStr = ::strReplaceOnce( statusStr, "[eta]", ::getETAStr( eta ) );
+
+    return statusStr;
+}
+
+
+function fillNetworkStatus( data = null )
+{
+    local speed = "0";
+    local uspeed = "0";
+    local p2pSpeed = "0";
+    local p2pSeeds = "0";
+    local httpSpeed = "0";
+    local httpSeeds = "0";
+
+    if (data != null)
+    {
+        speed = data.speed.tostring() + " " + ::speedNames[data.speed_m];
+        uspeed = data.uspeed.tostring() + " " + ::speedNames[data.uspeed_m];
+        p2pSpeed = data.p2p.tostring() + " " + ::speedNames[data.p2p_m];
+        httpSpeed = data.http.tostring() + " " + ::speedNames[data.http_m];
+        p2pSeeds = data.p2p_seeds.tostring();
+        httpSeeds = data.http_seeds.tostring();
+    }
+
+    ::setTextRaw("net_speed", speed);
+    ::setTextRaw("net_uspeed", uspeed);
+    ::setTextRaw("net_p2p_speed", p2pSpeed);
+    ::setTextRaw("net_http_speed", httpSpeed);
+    ::setTextRaw("net_p2p_seeds", p2pSeeds);
+    ::setTextRaw("net_http_seeds", httpSeeds);
+}
+
+
+function strReplaceOnce( str, repl, repl_to )
+{
+    local pos = str.indexof( repl );
+    if( pos != null )
+    {
+        local ret;
+
+        if( pos > 0 )
+        {
+            ret  = str.slice( 0, pos );
+            ret += repl_to;
+            ret += str.slice( pos + repl.len() );
+        }
+        else
+        {
+            ret  = repl_to;
+            ret += str.slice( repl.len() );
+        }
+
+        return ret;
+    }
+
+    return str;
+}
+
+
+
+::timeNames <- null;
+
+function getETAStr( sec )
+{
+    if( sec < 0 )
+    {
+        return ::getLocText( "time_inf" );
+    }
+
+    if( ::timeNames == null )
+    {
+        ::timeNames = [ ::getLocText( "time_day" ), ::getLocText( "time_hour" ), ::getLocText( "time_min" ), ::getLocText( "time_sec" ) ];
+    }
+
+    local days = sec / 86400;
+    sec -= days * 86400;
+
+    local hours = sec / 3600;
+    sec -= hours * 3600;
+
+    local mins = sec / 60;
+    sec -= mins * 60;
+
+    local times = [ days, hours, mins, sec ];
+
+    for( local i = 0; i < 3; ++i )
+    {
+        if( times[ i ] )
+        {
+            if( times[ i + 1 ] )
+            {
+                return times[ i ].tostring() + ::timeNames[ i ] + " " + times[ i + 1 ].tostring() + ::timeNames[ i + 1 ];
+            }
+
+            return times[ i ].tostring() + ::timeNames[ i ];
+        }
+    }
+
+    return times[ 3 ].tostring() + ::timeNames[ 3 ];
+}
+
+function onFinishCheckFilesFast( files_ok )
+{
+    if( files_ok )
+    {
+        ::fastCheckState = 1;
+        ::filesCheckState = 1;
+        ::setHtmlRaw( "progress_status_1", ::getLocText( "files_ok" ) );
+        ::display("progress_status_3", false);
+        if (::isChecked("seeding_on"))
+          ::forceSeeding(::getGameDir(), ::yupProject, ::fillNetworkStatus)
+
+        ::tryShowRunGame();
+    }
+    else
+    {
+        ::fastCheckState = 0;
+    }
+}
+
+function onTorrentStateChange( state, id )
+{
+    switch( state )
+    {
+        // Проверка файлов торрент-клиентом (подсчёт хешей и сравнение с эталоном).
+        // Производится перед загрузкой для понимания того, какие куски контента уже есть у пользователя.
+        case ::YU2_STATE_CHECKING:
+        {
+            ::setHtmlRaw( id, ::getLocText( "torrent_analyzing_files" ));
+        }
+        break;
+
+        // Закачка файлов с серверов.
+        case ::YU2_STATE_DOWNLOADING:
+        {
+            ::setHtmlRaw( id, ::getLocText( "torrent_downloading" ));
+            ::isDownloading = "1"
+        }
+        break;
+
+        // У клиента готово 100% файлов, игра скачана или обновлена. Так может получиться либо после загрузки всех 100%,
+        // либо после проверки файлов, если у пользователя уже есть все необходимые файлы.
+        case ::YU2_STATE_DONE:
+        {
+          ::setHtmlRaw("progress_status_3", "");
+        }
+        // Раздача контента. После окончания загрузки начинается раздача контента. Лончер прекращает работу с торрентом после получения
+        // YU2_STATE_DONE, но этот статус всё же возможен, так как прекращение работы с торрентом происходит не мгновенно
+        // и лончер может успеть оповестить колбек о начале сидирования.
+        case ::YU2_STATE_SEEDING:
+        break;
+
+        case ::YU2_STATE_COPYING:
+            ::setHtmlRaw( id, ::getLocText( "torrent_copying" ));
+            ::setHtmlRaw( "progress_status_2", " " );
+            break;
+
+        case ::YU2_STATE_DOWNLOADING_YUP:
+        {
+            ::setHtmlRaw( id, ::getLocText( "torrent_yup_downloading" ));
+            ::setHtmlRaw( "progress_status_2", " " );
+        }
+
+/*        default:
+        {
+            ::setHtmlRaw( id, ::getLocText( "torrent_before_download" ) );        }*/
+    }
+}
+
+function isEacInstalled() {
+  local function findStringInString(key, id) {
+    return ::split(key, ";").indexof(id) != null
+  }
+
+  local eacString = ::getRegString(HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\EasyAntiCheat",
+    "GamesInstalled", "")
+
+  return findStringInString(eacString, ::eacGameId)
+}
+
+function runEac(cmd, cb) {
+  local exe = "EasyAntiCheat\\EasyAntiCheat_Setup.exe"
+  local params = cmd + " " + ::eacGameId + " -console"
+  local gameDir = ::getGameDir()
+
+  if (::fileExists(::makeFullPath(gameDir, exe)))
+    ::shellExecuteAsync(exe, params, gameDir, cb)
+  else
+    ::debug("EAC installer " + exe + " doesn't exist")
+}
+
+function installEac(cb) {
+  if (::isEacInstalled()) {
+    ::debug("EAC already installed")
+    cb(true)
+    return
+  }
+
+  runEac("install", cb)
+}
+
+
+function uninstallEac(cb) {
+  runEac("uninstall", cb)
+}
+
+
+function runGameBtnMouseDown()
+{
+    local gameLang = ::getValue("language", "Russian").toupper()
+
+    local dmmUserId = ::getDmmUserId();
+    local dmmToken = ::getDmmToken();
+//    local parameters = "-lang " + gameLang;
+    local parameters = ""  
+    local gameDir = ::getGameDir()
+    local eacConf
+
+/*    if (::win32Only()) {
+        parameters += " --32bit"
+        eacConf = "Settings32.json"
+    } else {
+        parameters += " --64bit"
+        eacConf = "Settings64.json"
+    }
+
+    parameters += " -eac_launcher_settings " + eacConf*/
+
+
+    parameters += " -fromlauncher";
+
+    if (::getValue("enable_nvidia_aftermath"))
+        parameters += " --aftermath";
+
+    if (!::getValue("enable_amd_ags"))
+        parameters += " --noamdags";
+
+    if (::getValue("ultra_low_quality"))
+        parameters += " --ultraLowQuality";
+
+    if (dmmUserId.len() && dmmToken.len())
+        parameters += " -dmm_user_id " + dmmUserId + " -dmm_token " + dmmToken;
+
+    if(::getValue("allowMultiCopies"))
+       parameters += " -multiCopies"
+
+    if(::getValue("Safemode"))
+       parameters += " -safe"
+
+    if(::getValue("dontSaveConfig"))
+       parameters += " -dontSaveConfig"
+
+    if (::getValue("no_eac"))
+      parameters += " --no-relaunch";
+
+    // #0042346 - pass commandline through
+    parameters += " " + ::getCommandLine();
+
+    if (::getValue("circuitParam") == true )
+        parameters += " -circuit " + "live";
+    else if (::curCircuit == "ptr"){
+        parameters += " -circuit " + "ptr";
+    }
+    if (::getValue("enable_custom_param"))
+        parameters += " " + ::getValue("customParamInput");
+
+    if (::getValue("debugParam") == true ) {
+      if(!::questMessageUtf(getGameExePath() + "\n" + parameters + "\nЗапустить?", ::getLocText( "header" ))) {
+        return;
+      }
+    }
+    local runGame = function(ok) {
+      if (!ok)
+        ::debug("Couldn't install EAC");
+
+
+//      if (::shellExecute(::getEacPath(), parameters, gameDir, ::SW_SHOWNORMAL)) {
+//        ::settings.save();
+//      }
+
+      if (::shellExecute(::getGameExePath(), parameters, gameDir, ::SW_SHOWNORMAL)) {
+        ::settings.save();
+      }
+      if(::getValue("allowMultiCopies") == false ) {
+        ::exit();
+      }
+    }
+
+    ::installEac(runGame)
+}
+function save_and_exit()
+{
+  if(::isDownloading == "1") {
+    ::exit_after_download = true;
+    ::HideToTray();
+    return;
+  }
+  ::exit();
+  ::settings.save();
+}
+
+
+function onApplicationExit() { return ::saveAllSettings() }
+
+function saveAllSettings()
+{
+  ::settings.save();
+
+  return true;
+}
+
+// repair must only be enabled when game fully updated and checked.
+// repair must blocks all other game function just like normal files check on start of launcher
+function repair()
+{
+    ::disable( "run_game1" ); // disable launch button
+    ::disable( "run_game2" ); // disable repair button
+
+    ::setValue("update_progress", 0)
+
+    ::setHtmlRaw( "progress_status_1", ::getLocText( "files_needs_check" ) );
+    ::setHtmlRaw( "progress_status_2", " " );
+
+    ::doCheckFiles(::onRepairComplete)
+}
+
+
+
+function onFinishCheckFilesFastRepair( files_ok )
+{
+    if( files_ok )
+    {
+        ::display("progress_status_3", false);
+        ::fastCheckState = 1;
+        ::filesCheckState = 1;
+        ::setHtmlRaw( "progress_status_1", ::getLocText( "files_ok" ) );
+        ::doRepair();
+    }
+    else
+    {
+        ::fastCheckState = 0;
+    }
+}
+
+
+function doCheckFiles(on_complete = ::onUpdateComplete)
+{
+    ::filesCheckState = 1;
+    ::show_download_status = true;
+    ::setHtmlRaw( "progress_status_1", ::getLocText( "files_corrupted" ) );
+
+    ::doDownloadFiles(on_complete)
+}
+
+
+function downloadFilesProc(on_complete = ::onUpdateComplete) {
+    ::downloadFiles(::getGameDir(), ::yupProject, ::SetProgress, ::onUpdateStateChange,
+      on_complete, ::onDownloadError, ::onUpdateStatus, ::onPackComplete );
+}
+
+
+function onYupUpdated(on_complete) {
+    local cb = {
+      progress = ::SetProgress
+      state = ::onUpdateStateChange
+      done = on_complete
+      error = ::onDownloadError
+      status = ::onUpdateStatus
+      pack = ::onPackComplete
+    };
+
+    ::updateGameVersion( ::getGameDir(), ::yupProject, cb );
+}
+
+
+function updateFilesProc(on_complete = ::onUpdateComplete) {
+    ::updateYup( ::getGameDir(), ::yupProject, ::yupProjectTag,
+      ::SetProgress, ::onUpdateStateChange, @() onYupUpdated(on_complete), ::onDownloadError )
+}
+
+
+function onGameResetComplete(ok) {
+    ::show_download_status = false
+
+    if (ok) {
+      ::setHtmlRaw( "progress_status_1", ::getLocText( "repair_complete" ) )
+      ::setHtmlRaw( "progress_status_2", " " )
+
+      ::tryShowRunGame()
+    }
+    else {
+        ::setHtmlRaw( "progress_status_1", ::getLocText( "repair_failed" ) );
+    }
+}
+
+
+function onEacInstalled(ok) {
+
+    //This way we call game settings reset EVERY repair regardless files was OK or not.
+    //To reset game settings only if files was broken we need to check status in
+    //onUpdateStateChange(). Status YU2_STATE_DOWNLOADING, YU2_STATE_DOWNLOADING_YUP,
+    //YU2_STATE_COPYING means something was wrong with files on disk
+    ::executeProcessAndWaitAsync( ::getGameExePath(), " -resetprlf -resetcfg", ::getGameDir(),
+      false, ::onGameResetComplete)
+}
+
+
+function onRepairComplete() {
+    ::fastCheckState = 1
+    ::filesCheckState = 1
+    ::gameVerState = 1
+
+    //Re-install EAC
+    ::runEac("install", onEacInstalled)
+}
+
+
+function tryShowRunGame()
+{
+    if( ::gameVerState <= 0 || ::launcherVerState <= 0 ) // not checked or old app/game version
+    {
+        ::debug( "Version check has not been performed" );
+        return;
+    }
+
+    if( ::fastCheckState <= 0 || ::filesCheckState <= 0 ) // not checked or corrupted files
+    {
+        ::debug( "Corrupted files" );
+        return;
+    }
+
+    ::debug("Enable Run game")
+
+    ::enable( "language" );
+    ::enable( "run_game1" );
+    ::enable( "run_game2" );
+}
+
+
+
+// Функция, которая контролирует показ сообщения о повреждённых
+// файлах. Перед показом MessageBox со списком файлов и предложением выполнить
+// полную проверку лончер периодически вызывает этот колбек до тех пор, пока тот не
+// вернёт true. Это сделано для того, чтобы можно было запустить быструю проверку
+// файлов сразу при старте лончера, а полную предлагать только после того, как мы
+// проверили актуальность версии лончера и игры.
+function onCheckFiles( files_ok )
+{
+    if( files_ok )
+    {
+        ::fastCheckState = 1;
+        ::filesCheckState = 1;
+        ::setHtmlRaw( "progress_status_1", ::getLocText( "files_ok" ) );
+        ::check_online();
+        ::display("progress_status_3", false);
+        ::tryShowRunGame();
+    }
+    else
+    {
+        ::filesCheckState = 0;
+        ::check_online();
+    }
+}
+
+
+
+function doDownloadFiles(on_complete = ::onUpdateComplete)
+{
+    ::show_download_status = true;
+    ::setHtmlRaw( "progress_status_1", ::getLocText( "torrent_before_download" ) );
+
+    if (::yupExist(::getGameDir(), ::yupProject)) //There is .yup and we can perform files check/download missed
+      ::downloadFilesProc(on_complete)
+    else //.yup file lost and we have to download current .yup and update game to that version
+      ::updateFilesProc(on_complete)
+}
+
+
+function shouldSkipGameUpdate()
+{
+    if(::getValue("ignore_update"))
+      return true;
+    else
+      return ::fileExists(::makeFullPath(::getGameDir(), "ignoreGameUpdate"));
+}
+
+
+function onNoLauncherUpdate()
+{
+    ::launcherVerState = 1;
+    ::setHtmlRaw( "progress_status_1", ::getLocText( "update_check" ) );
+
+    local checkVerTime = 3600;
+    if (::shouldSkipGameUpdate())
+        checkVerTime = 0;
+
+    ::checkGameVersion( ::getGameDir(), ::yupProject, ::yupProjectTag, ::onGameVersion, checkVerTime );
+}
+
+
+function onLauncherUpdateError()
+{
+    ::hideProgress();
+    ::onNoLauncherUpdate();
+}
+
+
+function doCheckLauncherUpdates(dont_check) {
+  if (dont_check)
+    ::onLauncherVersion(false)
+  else
+    ::checkLauncherUpdates(::onLauncherVersion)
+}
+
+
+function onLauncherVersion( new_ver )
+{
+    if( new_ver )
+    {
+        ::launcherVerState = 0;
+        ::updateLauncher( ::getGameDir(), ::SetProgress, ::hideProgress, ::onLauncherUpdateError);
+    }
+    else
+    {
+        ::onNoLauncherUpdate();
+    }
+}
+
+function hideProgress()
+{
+}
+
+function onLangChanged()
+{
+    local lang = ::getValue("language", ::curLanguage)
+
+    if( lang != ::curLanguage )
+    {
+        ::curLanguage = lang;
+        ::settings.save();
+        ::restartLauncher();
+    }
+}
+
+function showTorrentErrorMessage( err_code )
+{
+  local msgId = "";
+
+  switch (err_code)
+  {
+    case ::YU2_ERROR_ACCESS_RIGHTS:
+      msgId = "yuplay/err_access_rights";
+      break;
+
+    case ::YU2_ERROR_SPACE:
+      msgId = "yuplay/err_free_space";
+      break;
+  }
+
+  if (msgId.len())
+    ::errorMessageUtf(::getLocText(msgId), "");
+}
+
+
+function cleanLogs(dirname, keep_days, keep_files, keep_mb)
+{
+    if ("cleanupLogs" in getroottable())
+    {
+        local gameFolder = ::getGameDir()
+        ::cleanupLogs(::makeFullPath(gameFolder, dirname), keep_days, keep_files, keep_mb);
+    }
+}
+function open_settings()
+{
+    ::display( "settings_dialog", true )
+    ::display( "settings_dialog_2", false )
+    ::display("settings_dialog_3", false);
+    ::display("settings_dialog_4", false);
+    ::display("serverlist_2", false);
+    ::display("open_customize_button", true);
+    ::display("close_customize_button", false);
+    ::display("settings_dialog_5", false);
+    ::secret_settings_closed = true;
+    ::customize_menu_closed = true;
+    ::server_monitoring_closed = true;
+}
+
+function close_settings()
+{
+    ::display( "settings_dialog", false )
+    ::display( "settings_dialog_2", false )
+}
+
+function open_settings_2()
+{
+    ::display( "settings_dialog_2", true )
+    ::display( "settings_dialog", false )
+//    ::display("settings_dialog_3", false);
+    ::display("settings_dialog_4", false);
+    ::display("settings_dialog_5", false);
+    ::display("open_customize_button", true);
+    ::display("close_customize_button", false);
+//    ::display("serverlist_2", false);
+//    ::secret_settings_closed = true;
+    ::customize_menu_closed = true;
+//    ::server_monitoring_closed = true;
+}
+
+
+function close_settings_2()
+{
+    ::display( "settings_dialog_2", false )
+    ::display( "settings_dialog", false )
+}
+
+function setDownloadParams()
+{
+    onDnlLimit()
+    onUplLimit()
+    onSpeedChange()
+    onUTPChange()
+    onDHTChange()
+    onPeerExchangeChange()
+}
+function onDnlLimit()
+{
+    display( "dnl_speed_rate", getValue( "dnl_limit" ) )
+    onSpeedChange()
+}
+
+
+function onUplLimit()
+{
+    display ( "upl_speed_rate", getValue( "upl_limit" ) )
+    onSpeedChange()
+}
+
+
+function onSpeedChange()
+{
+    local downloadLimit=0
+    local uploadLimit=0
+    if(getValue("upl_limit"))
+    {
+        uploadLimit=getValue("upl_speed_rate") * 1024
+        ::setUploadLimit(uploadLimit)
+    }
+    else
+    {
+        ::setUploadLimit(0)
+    }
+
+    if(getValue("dnl_limit"))
+    {
+        downloadLimit=getValue("dnl_speed_rate") * 1024
+        ::setDownloadLimit(downloadLimit)
+    }
+    else
+    {
+        ::setDownloadLimit(0)
+    }
+}
+
+function onUTPChange()
+{
+    local utp = ::getValue("UTP2")
+    ::setUTP(utp)
+}
+function onDHTChange()
+{
+    local dht = ::getValue("DHT")
+    ::setDHT(dht)
+}
+function onPeerExchangeChange()
+{
+    local pe = ::getValue("peer_exchange")
+    ::setPeerExchange(pe)
+}
+function onBgUpdateConfigured(success) {
+  ::enable("bg_update")
+}
+function configureBgUpdate(turn_on, cb = ::onBgUpdateConfigured) {
+  ::disable("bg_update")
+
+  if (turn_on)
+    ::enableBgUpdate(true, ::getGameDir(), ::yupProject, ::yupProjectTag, ::curLanguage, cb)
+  else
+    ::enableBgUpdate(false, ::getGameDir(), "", "", ::curLanguage, cb)
+}
+
+function onBgUpdateSwitch() {
+    ::configureBgUpdate(::isChecked("bg_update"))
+}
+
+function showLangDisplay() {
+    ::display("[display-russian]", false);
+    ::display("[display-" + ::curLanguage.tolower() + "]", true);
+}
